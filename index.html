@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#14121c">
+<link rel="manifest" href="inbox-manifest.json">
+<title>Grimoire Inbox</title>
+<!--
+  PUBLICLY HOSTABLE idea/card inbox for Grimoire (the Gen-C input surface), MESS-style.
+  It talks ONLY to the GitHub Contents API of YOUR PRIVATE exchange repo, using a fine-grained
+  Personal Access Token you paste in. The token is stored in localStorage (this browser only) --
+  NOT a cookie (a cookie would auto-send on every request to this host; localStorage is read only by
+  this script). Nothing is sent anywhere but api.github.com. Keep the exchange repo PRIVATE.
+  All repo-sourced text is rendered via textContent (never innerHTML) -- this page holds a repo-write
+  token, so an XSS here is the worst case; we design it out.
+-->
+<style>
+  :root{--bg:#14121c;--panel:#1e1b2b;--panel2:#262235;--ink:#ece8f5;--muted:#9a93b4;--accent:#c9a94a;
+    --accent2:#8b5cf6;--line:#332d47;--good:#39c07a;--bad:#d9736b;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  header h1{font-size:18px;margin:0;font-weight:650}
+  .badge{font-size:11px;color:var(--bg);background:var(--accent);padding:2px 8px;border-radius:99px;font-weight:700}
+  nav{display:flex;gap:6px;margin-left:auto}
+  nav button,.ghost{background:transparent;border:1px solid var(--line);color:var(--muted);padding:6px 12px;border-radius:8px;cursor:pointer;font:inherit;font-size:14px}
+  nav button.on{color:var(--ink);border-color:var(--accent);background:var(--panel2)}
+  main{max-width:720px;margin:0 auto;padding:18px 16px 70px}
+  textarea,input,select{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:11px 13px;font:inherit}
+  textarea{min-height:70px;resize:vertical}
+  .row{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap}
+  button.go{background:var(--accent);color:#1a1606;border:none;border-radius:10px;padding:10px 18px;font-weight:700;cursor:pointer}
+  button.go:disabled{opacity:.5;cursor:default}
+  .hint{color:var(--muted);font-size:13px;margin:10px 2px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-top:12px}
+  .card .q{font-weight:650}
+  .card .a{color:var(--muted);margin-top:8px;font-size:14px}
+  .card .meta{font-size:12px;color:var(--muted);margin-top:8px}
+  .idea{display:flex;gap:10px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-top:9px}
+  .idea .txt{flex:1}
+  .toast{font-size:13px;margin-left:4px}
+  .ok{color:var(--good)} .bad{color:var(--bad)} .muted{color:var(--muted)}
+  .empty{color:var(--muted);text-align:center;padding:34px 0}
+  .setup label{display:block;font-size:13px;color:var(--muted);margin:12px 0 5px}
+  .spin{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:s .7s linear infinite;vertical-align:-2px}
+  @keyframes s{to{transform:rotate(360deg)}}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <h1>📖 Grimoire Inbox</h1>
+  <span class="badge" id="repoBadge">not configured</span>
+  <nav>
+    <button id="tab-drop" class="on" onclick="show('drop')">Drop</button>
+    <button id="tab-cards" onclick="show('cards');loadCards()">Cards</button>
+    <button class="ghost" onclick="show('setup')">⚙</button>
+  </nav>
+</header>
+<main>
+  <section id="view-setup" style="display:none">
+    <div class="card setup">
+      <div class="q">Connect your private exchange repo</div>
+      <div class="hint">Create a <b>fine-grained Personal Access Token</b> at
+        <code>github.com/settings/personal-access-tokens/new</code> → "Only select repositories" → your
+        private <code>grimoire-exchange</code> repo → Permissions → <b>Contents: Read and write</b>.
+        The token is stored only in this browser (localStorage), and used only against api.github.com.</div>
+      <label>GitHub token (fine-grained PAT)</label>
+      <input id="cfgToken" type="password" placeholder="github_pat_…" autocomplete="off">
+      <label>Repository (owner/name)</label>
+      <input id="cfgRepo" placeholder="yourname/grimoire-exchange" autocomplete="off">
+      <div class="row">
+        <button class="go" onclick="saveConfig()">Save &amp; verify</button>
+        <button class="ghost" onclick="clearConfig()">Clear token</button>
+        <span class="toast" id="cfgMsg"></span>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-drop">
+    <textarea id="idea" placeholder="Drop an idea to harvest later… (a topic or a question)"></textarea>
+    <div class="row">
+      <select id="school" style="max-width:160px">
+        <option value="memoria">memoria</option><option value="vita">vita</option>
+        <option value="fabrica">fabrica</option><option value="scientia">scientia</option>
+        <option value="cultura">cultura</option><option value="civitas">civitas</option>
+        <option value="arcana">arcana</option>
+      </select>
+      <button class="go" id="dropBtn" onclick="dropIdea()">Drop idea →</button>
+      <span class="toast" id="dropMsg"></span>
+    </div>
+    <div class="hint">Ideas land in <code>ideas/</code> of your private repo; longbottom syncs and harvests them.</div>
+    <div id="ideas"></div>
+  </section>
+
+  <section id="view-cards" style="display:none">
+    <div class="hint">Your harvested flashcards, read from <code>cards/</code> (read-only on this device).</div>
+    <div id="cards"></div>
+  </section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let cfg = loadConfig();
+
+function loadConfig(){ try{ return JSON.parse(localStorage.getItem("grimoire-inbox-config")||"null"); }catch(e){ return null; } }
+function storeConfig(c){ try{ localStorage.setItem("grimoire-inbox-config", JSON.stringify(c)); }catch(e){} }
+
+function show(v){
+  for(const n of ["drop","cards","setup"]){
+    $("view-"+n).style.display = v===n?"":"none";
+    const t=$("tab-"+n); if(t) t.className = v===n?"on":"";
+  }
+}
+function refreshBadge(){ $("repoBadge").textContent = cfg?.repo ? cfg.repo : "not configured"; }
+
+// --- GitHub Contents API (private repo); Bearer token from localStorage only ---
+async function gh(path, opts={}){
+  if(!cfg?.token || !cfg?.repo) throw new Error("not configured");
+  const res = await fetch(`https://api.github.com/repos/${cfg.repo}/contents/${path}`, {
+    ...opts,
+    headers: { "Authorization":`Bearer ${cfg.token}`, "Accept":"application/vnd.github+json", ...(opts.headers||{}) }
+  });
+  return res;
+}
+const b64 = s => btoa(unescape(encodeURIComponent(s)));
+const unb64 = s => decodeURIComponent(escape(atob(s)));
+
+async function saveConfig(){
+  const token=$("cfgToken").value.trim(), repo=$("cfgRepo").value.trim().replace(/^https?:\/\/github\.com\//,"").replace(/\.git$/,"");
+  if(!token || !/^[^/]+\/[^/]+$/.test(repo)){ $("cfgMsg").className="toast bad"; $("cfgMsg").textContent="need a token and owner/repo"; return; }
+  cfg={token,repo};
+  $("cfgMsg").innerHTML='<span class="spin"></span> verifying…';
+  try{
+    const r = await gh("");  // list repo root
+    if(!r.ok){ throw new Error(r.status===404?"repo not found / token lacks access":("GitHub "+r.status)); }
+    storeConfig(cfg); refreshBadge();
+    $("cfgMsg").className="toast ok"; $("cfgMsg").textContent="✓ connected"; show("drop"); loadIdeas();
+  }catch(e){ cfg=loadConfig(); $("cfgMsg").className="toast bad"; $("cfgMsg").textContent=e.message; }
+}
+function clearConfig(){ try{ localStorage.removeItem("grimoire-inbox-config"); }catch(e){} cfg=null; refreshBadge(); $("cfgMsg").textContent="token cleared"; }
+
+// --- drop an idea: PUT ideas/<id>.json (the shape daemon/exchange.import_ideas expects) ---
+async function dropIdea(){
+  const text=$("idea").value.trim(); if(!text) return;
+  if(!cfg?.token){ show("setup"); return; }
+  $("dropBtn").disabled=true; $("dropMsg").className="toast"; $("dropMsg").innerHTML='<span class="spin"></span> dropping…';
+  const id = "idea-" + Math.random().toString(36).slice(2,10) + Date.now().toString(36).slice(-4);
+  const payload = { id, text: text.slice(0,500), school: $("school").value, created: new Date().toISOString(), source: "inbox-pwa" };
+  try{
+    const r = await gh(`ideas/${id}.json`, { method:"PUT",
+      body: JSON.stringify({ message:`drop idea ${id}`, content: b64(JSON.stringify(payload,null,2)) }) });
+    if(!r.ok) throw new Error("GitHub "+r.status+((r.status===403)?" (token needs Contents: write)":""));
+    $("idea").value=""; $("dropMsg").className="toast ok"; $("dropMsg").textContent="✓ dropped"; loadIdeas();
+  }catch(e){ $("dropMsg").className="toast bad"; $("dropMsg").textContent=e.message; }
+  finally{ $("dropBtn").disabled=false; }
+}
+
+// --- list pending ideas (textContent only) ---
+async function loadIdeas(){
+  if(!cfg?.token){ $("ideas").innerHTML='<div class="empty">Connect a repo in ⚙ to start.</div>'; return; }
+  $("ideas").innerHTML='<div class="empty"><span class="spin"></span></div>';
+  try{
+    const r = await gh("ideas"); if(!r.ok){ $("ideas").innerHTML=""; return; }
+    const files = (await r.json()).filter(f=>f.name.endsWith(".json"));
+    $("ideas").innerHTML="";
+    if(!files.length){ $("ideas").innerHTML='<div class="empty">No pending ideas.</div>'; return; }
+    for(const f of files.slice(0,50)){
+      let text=f.name;
+      try{ const c=await gh("ideas/"+f.name); if(c.ok){ const j=JSON.parse(unb64((await c.json()).content)); text=(typeof j.text==="string")?j.text:f.name; } }catch(e){}
+      const row=document.createElement("div"); row.className="idea";
+      const t=document.createElement("span"); t.className="txt"; t.textContent=text;   // textContent: safe
+      const s=document.createElement("span"); s.className="muted"; s.style.fontSize="12px"; s.textContent="pending";
+      row.append(t,s); $("ideas").appendChild(row);
+    }
+  }catch(e){ $("ideas").innerHTML='<div class="empty bad">'+""+'</div>'; $("ideas").firstChild.textContent=e.message; }
+}
+
+// --- browse exported cards (read-only; ALL fields via textContent) ---
+async function loadCards(){
+  if(!cfg?.token){ $("cards").innerHTML='<div class="empty">Connect a repo in ⚙ to start.</div>'; return; }
+  $("cards").innerHTML='<div class="empty"><span class="spin"></span></div>';
+  try{
+    const r = await gh("cards"); if(!r.ok){ $("cards").innerHTML='<div class="empty">No cards yet.</div>'; return; }
+    const files=(await r.json()).filter(f=>f.name.endsWith(".json")).slice(0,60);
+    $("cards").innerHTML="";
+    if(!files.length){ $("cards").innerHTML='<div class="empty">No cards yet. Harvest on longbottom, then sync.</div>'; return; }
+    for(const f of files){
+      let card=null;
+      try{ const c=await gh("cards/"+f.name); if(c.ok) card=JSON.parse(unb64((await c.json()).content)); }catch(e){}
+      if(!card) continue;
+      const div=document.createElement("div"); div.className="card";
+      const q=document.createElement("div"); q.className="q"; q.textContent=card.question||card.title||"(untitled)";
+      const a=document.createElement("div"); a.className="a"; a.textContent=card.fact||card.fact_text||"";
+      const m=document.createElement("div"); m.className="meta";
+      const star=Math.max(0,Math.min(5,card.star_rating||0));
+      m.textContent="★".repeat(star)+"☆".repeat(5-star)+"  ·  "+String(card.locator||"").split("://").pop()+(card.choices?"  · quiz-ready":"");
+      div.append(q,a,m); $("cards").appendChild(div);
+    }
+  }catch(e){ const d=document.createElement("div"); d.className="empty bad"; d.textContent=e.message; $("cards").innerHTML=""; $("cards").appendChild(d); }
+}
+
+// init
+refreshBadge();
+if(!cfg?.token){ show("setup"); } else { loadIdeas(); }
+$("idea")?.addEventListener("keydown",e=>{ if(e.key==="Enter"&&(e.metaKey||e.ctrlKey)) dropIdea(); });
+</script>
+</body>
+</html>
